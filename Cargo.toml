@@ -1,0 +1,7 @@
+[package]
+name = "console-traits"
+version = "0.1.0"
+authors = ["Jonathan 'theJPster' Pallant <github@thejpster.org.uk>"]
+description = "Basic console traits, such as setting char position and writing strings."
+
+[dependencies]
