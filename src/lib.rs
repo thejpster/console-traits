@@ -32,14 +32,14 @@ pub struct Position {
     /// The horizontal row (zero at the top)
     pub row: Row,
     /// The vertical column (zero on the left)
-    pub col: Col
+    pub col: Col,
 }
 
 /// How to handle Control Characters
 #[derive(Debug, Copy, Clone)]
 pub enum ControlCharMode {
     Interpret,
-    Display
+    Display,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -49,7 +49,7 @@ pub enum SpecialChar {
     CarriageReturn,
     Tab,
     Backspace,
-    Delete
+    Delete,
 }
 
 /// Abstraction for our console. We can move the cursor around and write text to it.
@@ -117,28 +117,28 @@ pub trait Console {
                     pos.row.incr();
                     self.set_pos_unbounded(pos);
                 }
-            },
+            }
             // Go to start of this row
             Some(SpecialChar::CarriageReturn) => {
                 pos.col = Col::origin();
                 self.set_pos_unbounded(pos);
-            },
+            }
             // Go to next tab stop
             Some(SpecialChar::Tab) => {
                 let tabs = pos.col.0 / 9;
                 pos.col.0 = (tabs + 1) * 9;
                 pos.col.bound(self.get_width());
                 self.set_pos_unbounded(pos);
-            },
+            }
             // Go back one space (but don't erase anything there)
             Some(SpecialChar::Backspace) => {
                 if pos.col > Col::origin() {
                     pos.col.decr();
                     self.set_pos_unbounded(pos);
                 }
-            },
+            }
             // Delete is ignored
-            Some(SpecialChar::Delete) => {},
+            Some(SpecialChar::Delete) => {}
             None => {
                 self.write_char_at(ch, pos)?;
                 self.move_cursor_right()?;
@@ -185,19 +185,15 @@ pub trait Console {
     /// Check if a char is special
     fn is_special(&self, ch: char) -> Option<SpecialChar> {
         match self.get_control_char_mode() {
-            ControlCharMode::Interpret => {
-                match ch {
-                    '\n' => Some(SpecialChar::Linefeed),
-                    '\r' => Some(SpecialChar::CarriageReturn),
-                    '\t' => Some(SpecialChar::Tab),
-                    '\u{007f}' => Some(SpecialChar::Delete),
-                    '\u{0008}' => Some(SpecialChar::Backspace),
-                    _ => None,
-                }
-            }
-            _ => {
-                None
-            }
+            ControlCharMode::Interpret => match ch {
+                '\n' => Some(SpecialChar::Linefeed),
+                '\r' => Some(SpecialChar::CarriageReturn),
+                '\t' => Some(SpecialChar::Tab),
+                '\u{007f}' => Some(SpecialChar::Delete),
+                '\u{0008}' => Some(SpecialChar::Backspace),
+                _ => None,
+            },
+            _ => None,
         }
     }
 }
@@ -210,7 +206,10 @@ impl Position {
 
     /// Get the origin (0, 0)
     pub fn origin() -> Position {
-        Position { row: Row::origin(), col: Col::origin() }
+        Position {
+            row: Row::origin(),
+            col: Col::origin(),
+        }
     }
 }
 
@@ -296,22 +295,24 @@ mod test {
 
     #[derive(Copy, Clone)]
     struct Line {
-        chars: [char; WIDTH as usize]
+        chars: [char; WIDTH as usize],
     }
 
     struct TestConsole {
         pos: Position,
         lines: [Line; HEIGHT as usize],
-        mode: ControlCharMode
+        mode: ControlCharMode,
     }
 
     impl TestConsole {
         fn new() -> TestConsole {
-            let line = Line { chars: [' '; WIDTH as usize] };
+            let line = Line {
+                chars: [' '; WIDTH as usize],
+            };
             TestConsole {
                 lines: [line; HEIGHT as usize],
                 pos: Position::origin(),
-                mode: ControlCharMode::Interpret
+                mode: ControlCharMode::Interpret,
             }
         }
     }
@@ -366,7 +367,9 @@ mod test {
         fn scroll_screen(&mut self) -> Result<(), Self::Error> {
             for row in 0..HEIGHT - 1 {
                 self.lines[row as usize] = self.lines[(row as usize) + 1];
-                self.lines[(HEIGHT as usize) - 1] =  Line { chars: [' '; WIDTH as usize] };
+                self.lines[(HEIGHT as usize) - 1] = Line {
+                    chars: [' '; WIDTH as usize],
+                };
             }
             Ok(())
         }
@@ -379,8 +382,7 @@ mod test {
         }
     }
 
-    impl core::fmt::Write for TestConsole  {
-
+    impl core::fmt::Write for TestConsole {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
             self.write_string(s).unwrap();
             Ok(())
@@ -391,7 +393,10 @@ mod test {
     fn test_write() {
         let mut c = TestConsole::new();
         c.write_str("Hello").unwrap();
-        assert_eq!(&c.lines[0].chars[0..10], &"Hello     ".chars().collect::<Vec<char>>()[..]);
+        assert_eq!(
+            &c.lines[0].chars[0..10],
+            &"Hello     ".chars().collect::<Vec<char>>()[..]
+        );
         assert_eq!(c.pos.row, Row::origin());
         assert_eq!(c.pos.col, Col(5));
     }
@@ -400,7 +405,10 @@ mod test {
     fn test_lf() {
         let mut c = TestConsole::new();
         c.write_str("Hello\n").unwrap();
-        assert_eq!(&c.lines[0].chars[0..10], &"Hello     ".chars().collect::<Vec<char>>()[..]);
+        assert_eq!(
+            &c.lines[0].chars[0..10],
+            &"Hello     ".chars().collect::<Vec<char>>()[..]
+        );
         assert_eq!(c.pos.row, Row(1));
         assert_eq!(c.pos.col, Col(0));
     }
@@ -409,7 +417,10 @@ mod test {
     fn test_cr() {
         let mut c = TestConsole::new();
         c.write_str("Hello\r123").unwrap();
-        assert_eq!(&c.lines[0].chars[0..10], &"123lo     ".chars().collect::<Vec<char>>()[..]);
+        assert_eq!(
+            &c.lines[0].chars[0..10],
+            &"123lo     ".chars().collect::<Vec<char>>()[..]
+        );
         assert_eq!(c.pos.row, Row(0));
         assert_eq!(c.pos.col, Col(3));
     }
@@ -418,7 +429,10 @@ mod test {
     fn test_bs() {
         let mut c = TestConsole::new();
         c.write_str("Hello~\u{0008}!").unwrap();
-        assert_eq!(&c.lines[0].chars[0..10], &"Hello!    ".chars().collect::<Vec<char>>()[..]);
+        assert_eq!(
+            &c.lines[0].chars[0..10],
+            &"Hello!    ".chars().collect::<Vec<char>>()[..]
+        );
         assert_eq!(c.pos.row, Row(0));
         assert_eq!(c.pos.col, Col(6));
     }
@@ -427,7 +441,12 @@ mod test {
     fn test_tab() {
         let mut c = TestConsole::new();
         c.write_str("1\t2\tHello\t4").unwrap();
-        assert_eq!(&c.lines[0].chars[0..28], &"1        2        Hello    4".chars().collect::<Vec<char>>()[..]);
+        assert_eq!(
+            &c.lines[0].chars[0..28],
+            &"1        2        Hello    4"
+                .chars()
+                .collect::<Vec<char>>()[..]
+        );
         assert_eq!(c.pos.row, Row(0));
         assert_eq!(c.pos.col, Col(28));
     }
@@ -439,7 +458,10 @@ mod test {
             writeln!(c, "{}", line).unwrap();
         }
         // First line should have a 1 in it, not a 0
-        assert_eq!(&c.lines[0].chars[0..4], &"1   ".chars().collect::<Vec<char>>()[..]);
+        assert_eq!(
+            &c.lines[0].chars[0..4],
+            &"1   ".chars().collect::<Vec<char>>()[..]
+        );
         assert_eq!(c.pos.row, Row(HEIGHT - 1));
         assert_eq!(c.pos.col, Col(0));
     }
