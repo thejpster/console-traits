@@ -35,6 +35,12 @@ pub struct Position {
     pub col: Col,
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum EscapeCharMode {
+    Waiting,
+    Seen
+}
+
 /// How to handle Control Characters
 #[derive(Debug, Copy, Clone)]
 pub enum ControlCharMode {
@@ -50,6 +56,7 @@ pub enum SpecialChar {
     Tab,
     Backspace,
     Delete,
+    Escape
 }
 
 /// Abstraction for our console. We can move the cursor around and write text to it.
@@ -86,12 +93,24 @@ pub trait Console {
     /// Get the current control char mode
     fn get_control_char_mode(&self) -> ControlCharMode;
 
+    /// Set the escape char mode
+    fn set_escape_char_mode(&mut self, mode: EscapeCharMode);
+
+    /// Get the current escape char mode
+    fn get_escape_char_mode(&self) -> EscapeCharMode;
+
     /// Called when the screen needs to scroll up one row.
     fn scroll_screen(&mut self) -> Result<(), Self::Error>;
 
     /// Write a single Unicode char to the screen at the given position
     /// without updating the current position.
     fn write_char_at(&mut self, ch: char, pos: Position) -> Result<(), Self::Error>;
+
+    /// Called when they've used an escape character in the string.
+    /// Currently you can only escape a single byte.
+    /// The escape character is '\u{001B}'
+    /// This function returns 'true' when the escape sequence is complete.
+    fn handle_escape(&mut self, escaped_char: char) -> bool;
 
     /// Write a string to the screen at the given position. Updates the
     /// current position to the end of the string. Strings will wrap across
@@ -105,43 +124,56 @@ pub trait Console {
 
     /// Write a single Unicode char to the screen at the current position.
     fn write_char(&mut self, ch: char) -> Result<(), Self::Error> {
-        let mut pos = self.get_pos();
-        match self.is_special(ch) {
-            // Go to start of next row
-            Some(SpecialChar::Linefeed) => {
-                pos.col = Col::origin();
-                if pos.row == self.get_height() {
-                    self.set_pos_unbounded(pos);
-                    self.scroll_screen()?;
-                } else {
-                    pos.row.incr();
-                    self.set_pos_unbounded(pos);
+        match self.get_escape_char_mode() {
+            EscapeCharMode::Seen => {
+                if self.handle_escape(ch) {
+                    self.set_escape_char_mode(EscapeCharMode::Waiting);
                 }
             }
-            // Go to start of this row
-            Some(SpecialChar::CarriageReturn) => {
-                pos.col = Col::origin();
-                self.set_pos_unbounded(pos);
-            }
-            // Go to next tab stop
-            Some(SpecialChar::Tab) => {
-                let tabs = pos.col.0 / 9;
-                pos.col.0 = (tabs + 1) * 9;
-                pos.col.bound(self.get_width());
-                self.set_pos_unbounded(pos);
-            }
-            // Go back one space (but don't erase anything there)
-            Some(SpecialChar::Backspace) => {
-                if pos.col > Col::origin() {
-                    pos.col.decr();
-                    self.set_pos_unbounded(pos);
+            EscapeCharMode::Waiting => {
+                let mut pos = self.get_pos();
+                match self.is_special(ch) {
+                    // Go to start of next row
+                    Some(SpecialChar::Linefeed) => {
+                        pos.col = Col::origin();
+                        if pos.row == self.get_height() {
+                            self.set_pos_unbounded(pos);
+                            self.scroll_screen()?;
+                        } else {
+                            pos.row.incr();
+                            self.set_pos_unbounded(pos);
+                        }
+                    }
+                    // Go to start of this row
+                    Some(SpecialChar::CarriageReturn) => {
+                        pos.col = Col::origin();
+                        self.set_pos_unbounded(pos);
+                    }
+                    // Go to next tab stop
+                    Some(SpecialChar::Tab) => {
+                        let tabs = pos.col.0 / 9;
+                        pos.col.0 = (tabs + 1) * 9;
+                        pos.col.bound(self.get_width());
+                        self.set_pos_unbounded(pos);
+                    }
+                    // Go back one space (but don't erase anything there)
+                    Some(SpecialChar::Backspace) => {
+                        if pos.col > Col::origin() {
+                            pos.col.decr();
+                            self.set_pos_unbounded(pos);
+                        }
+                    }
+                    // Delete is ignored
+                    Some(SpecialChar::Delete) => {}
+                    // Escape the next char
+                    Some(SpecialChar::Escape) => {
+                        self.set_escape_char_mode(EscapeCharMode::Seen);
+                    }
+                    None => {
+                        self.write_char_at(ch, pos)?;
+                        self.move_cursor_right()?;
+                    }
                 }
-            }
-            // Delete is ignored
-            Some(SpecialChar::Delete) => {}
-            None => {
-                self.write_char_at(ch, pos)?;
-                self.move_cursor_right()?;
             }
         }
         Ok(())
@@ -189,6 +221,7 @@ pub trait Console {
                 '\n' => Some(SpecialChar::Linefeed),
                 '\r' => Some(SpecialChar::CarriageReturn),
                 '\t' => Some(SpecialChar::Tab),
+                '\u{001b}' => Some(SpecialChar::Escape),
                 '\u{007f}' => Some(SpecialChar::Delete),
                 '\u{0008}' => Some(SpecialChar::Backspace),
                 _ => None,
