@@ -38,7 +38,7 @@ pub struct Position {
 #[derive(Debug, Copy, Clone)]
 pub enum EscapeCharMode {
     Waiting,
-    Seen
+    Seen,
 }
 
 /// How to handle Control Characters
@@ -56,11 +56,14 @@ pub enum SpecialChar {
     Tab,
     Backspace,
     Delete,
-    Escape
+    Escape,
 }
 
-/// Abstraction for our console. We can move the cursor around and write text to it.
-pub trait Console {
+/// Abstraction for our console. We can move the cursor around and write text
+/// to it. You should use either `UnicodeConsole` or `AsciiConsole` depending
+/// on whether you want full Unicode support (`&str`, `char`, etc), or just
+/// 8-bit characters (`&[u8]` and `u8`).
+pub trait BaseConsole {
     type Error;
 
     /// Gets the last col on the screen.
@@ -102,28 +105,163 @@ pub trait Console {
     /// Called when the screen needs to scroll up one row.
     fn scroll_screen(&mut self) -> Result<(), Self::Error>;
 
+    /// Move the current cursor right one position. Wraps at the end of the
+    /// line. Returns Ok(true) if the screen needs to scroll, or Ok(false)
+    /// if it does not.
+    fn move_cursor_right(&mut self) -> Result<(), Self::Error> {
+        let mut pos = self.get_pos();
+        if pos.col < self.get_width() {
+            // we'll still be on screen
+            pos.col.incr();
+            // no scroll needed
+            self.set_pos_unbounded(pos);
+        } else {
+            // We're going off the right hand edge
+            pos.col = Col::origin();
+            if pos.row == self.get_height() {
+                // We're at the bottom
+                self.set_pos_unbounded(pos);
+                self.scroll_screen()?;
+            } else {
+                // We're not at the bottom (yet)
+                pos.row.incr();
+                self.set_pos_unbounded(pos);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Refinement of `BaseConsole` which supports 8-bit characters. Use this is
+/// you are implementing an old-fashioned ASCII console (including extended
+/// ASCII, like Code Page 850, or ISO 8859-1).
+pub trait AsciiConsole: BaseConsole {
+    /// Write a single 8-bit char to the screen at the given position
+    /// without updating the current position.
+    fn write_char_at(&mut self, ch: u8, pos: Position) -> Result<(), Self::Error>;
+
+    /// Called when they've used an escape character in the string. Currently
+    /// you can only escape a single byte. The escape character is `0x1B`.
+    /// This function returns 'true' when the escape sequence is complete.
+    fn handle_escape(&mut self, escaped_char: u8) -> bool;
+
+    /// Write an 8-bit string to the screen at the given position. Updates the
+    /// current position to the end of the string. Strings will wrap across
+    /// the end of the screen and scroll the screen if they reach the bottom.
+    fn write_string(&mut self, s: &[u8]) -> Result<(), Self::Error> {
+        for ch in s.iter() {
+            self.write_character(*ch)?;
+        }
+        Ok(())
+    }
+
+    /// Write a single 8-bit char to the screen at the current position.
+    fn write_character(&mut self, ch: u8) -> Result<(), Self::Error> {
+        match self.get_escape_char_mode() {
+            EscapeCharMode::Seen => {
+                if self.handle_escape(ch) {
+                    self.set_escape_char_mode(EscapeCharMode::Waiting);
+                }
+            }
+            EscapeCharMode::Waiting => {
+                let mut pos = self.get_pos();
+                match self.is_special(ch) {
+                    // Go to start of next row
+                    Some(SpecialChar::Linefeed) => {
+                        pos.col = Col::origin();
+                        if pos.row == self.get_height() {
+                            self.set_pos_unbounded(pos);
+                            self.scroll_screen()?;
+                        } else {
+                            pos.row.incr();
+                            self.set_pos_unbounded(pos);
+                        }
+                    }
+                    // Go to start of this row
+                    Some(SpecialChar::CarriageReturn) => {
+                        pos.col = Col::origin();
+                        self.set_pos_unbounded(pos);
+                    }
+                    // Go to next tab stop
+                    Some(SpecialChar::Tab) => {
+                        let tabs = pos.col.0 / 9;
+                        pos.col.0 = (tabs + 1) * 9;
+                        pos.col.bound(self.get_width());
+                        self.set_pos_unbounded(pos);
+                    }
+                    // Go back one space (but don't erase anything there)
+                    Some(SpecialChar::Backspace) => {
+                        if pos.col > Col::origin() {
+                            pos.col.decr();
+                            self.set_pos_unbounded(pos);
+                        }
+                    }
+                    // Delete is ignored
+                    Some(SpecialChar::Delete) => {}
+                    // Escape the next char
+                    Some(SpecialChar::Escape) => {
+                        self.set_escape_char_mode(EscapeCharMode::Seen);
+                    }
+                    None => {
+                        self.write_char_at(ch, pos)?;
+                        self.move_cursor_right()?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Write an 8-bit string to the screen at the given position. Updates the
+    /// current position to the end of the string. Strings will wrap across
+    /// the end of the screen and scroll the screen if they reach the bottom.
+    fn write_string_at(&mut self, s: &[u8], pos: Position) -> Result<(), Self::Error> {
+        self.set_pos(pos)?;
+        self.write_string(s)?;
+        Ok(())
+    }
+
+    /// Check if an 8-bit char is special
+    fn is_special(&self, ch: u8) -> Option<SpecialChar> {
+        match self.get_control_char_mode() {
+            ControlCharMode::Interpret => match ch {
+                b'\n' => Some(SpecialChar::Linefeed),
+                b'\r' => Some(SpecialChar::CarriageReturn),
+                b'\t' => Some(SpecialChar::Tab),
+                0x1b => Some(SpecialChar::Escape),
+                0x7f => Some(SpecialChar::Delete),
+                0x08 => Some(SpecialChar::Backspace),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+/// Refinement of `BaseConsole` which supports Unicode characters. Use this is
+/// you are implementing a modern console with Unicode support.
+pub trait UnicodeConsole: BaseConsole {
     /// Write a single Unicode char to the screen at the given position
     /// without updating the current position.
     fn write_char_at(&mut self, ch: char, pos: Position) -> Result<(), Self::Error>;
 
-    /// Called when they've used an escape character in the string.
-    /// Currently you can only escape a single byte.
-    /// The escape character is '\u{001B}'
+    /// Called when they've used an escape character in the string. Currently
+    /// you can only escape a single byte. The escape character is `0x1B`.
     /// This function returns 'true' when the escape sequence is complete.
     fn handle_escape(&mut self, escaped_char: char) -> bool;
 
     /// Write a string to the screen at the given position. Updates the
     /// current position to the end of the string. Strings will wrap across
     /// the end of the screen and scroll the screen if they reach the bottom.
-    fn write_string(&mut self, str: &str) -> Result<(), Self::Error> {
-        for ch in str.chars() {
-            self.write_char(ch)?;
+    fn write_string(&mut self, s: &str) -> Result<(), Self::Error> {
+        for ch in s.chars() {
+            self.write_character(ch)?;
         }
         Ok(())
     }
 
     /// Write a single Unicode char to the screen at the current position.
-    fn write_char(&mut self, ch: char) -> Result<(), Self::Error> {
+    fn write_character(&mut self, ch: char) -> Result<(), Self::Error> {
         match self.get_escape_char_mode() {
             EscapeCharMode::Seen => {
                 if self.handle_escape(ch) {
@@ -182,35 +320,9 @@ pub trait Console {
     /// Write a string to the screen at the given position. Updates the
     /// current position to the end of the string. Strings will wrap across
     /// the end of the screen and scroll the screen if they reach the bottom.
-    fn write_string_at(&mut self, str: &str, pos: Position) -> Result<(), Self::Error> {
+    fn write_string_at(&mut self, s: &str, pos: Position) -> Result<(), Self::Error> {
         self.set_pos(pos)?;
-        self.write_string(str)?;
-        Ok(())
-    }
-
-    /// Move the current cursor right one position. Wraps at the end of the
-    /// line. Returns Ok(true) if the screen needs to scroll, or Ok(false)
-    /// if it does not.
-    fn move_cursor_right(&mut self) -> Result<(), Self::Error> {
-        let mut pos = self.get_pos();
-        if pos.col < self.get_width() {
-            // we'll still be on screen
-            pos.col.incr();
-            // no scroll needed
-            self.set_pos_unbounded(pos);
-        } else {
-            // We're going off the right hand edge
-            pos.col = Col::origin();
-            if pos.row == self.get_height() {
-                // We're at the bottom
-                self.set_pos_unbounded(pos);
-                self.scroll_screen()?;
-            } else {
-                // We're not at the bottom (yet)
-                pos.row.incr();
-                self.set_pos_unbounded(pos);
-            }
-        }
+        self.write_string(s)?;
         Ok(())
     }
 
