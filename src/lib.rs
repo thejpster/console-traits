@@ -345,12 +345,12 @@ pub trait UnicodeConsole: BaseConsole {
 
 impl Position {
     /// Create a new position
-    pub fn new(row: Row, col: Col) -> Position {
+    pub const fn new(row: Row, col: Col) -> Position {
         Position { row, col }
     }
 
     /// Get the origin (0, 0)
-    pub fn origin() -> Position {
+    pub const fn origin() -> Position {
         Position {
             row: Row::origin(),
             col: Col::origin(),
@@ -359,8 +359,12 @@ impl Position {
 }
 
 impl Col {
+    pub const fn new(value: u8) -> Col {
+        Col(value)
+    }
+
     /// Get the origin
-    pub fn origin() -> Col {
+    pub const fn origin() -> Col {
         Col(0)
     }
 
@@ -383,8 +387,12 @@ impl Col {
 }
 
 impl Row {
+    pub const fn new(value: u8) -> Row {
+        Row(value)
+    }
+
     /// Get the origin
-    pub fn origin() -> Row {
+    pub const fn origin() -> Row {
         Row(0)
     }
 
@@ -447,6 +455,7 @@ mod test {
         pos: Position,
         lines: [Line; HEIGHT as usize],
         mode: ControlCharMode,
+        escape_char_mode: EscapeCharMode,
     }
 
     impl TestConsole {
@@ -458,11 +467,12 @@ mod test {
                 lines: [line; HEIGHT as usize],
                 pos: Position::origin(),
                 mode: ControlCharMode::Interpret,
+                escape_char_mode: EscapeCharMode::Waiting,
             }
         }
     }
 
-    impl Console for TestConsole {
+    impl BaseConsole for TestConsole {
         type Error = ();
 
         /// Gets the last col on the screen.
@@ -508,6 +518,16 @@ mod test {
             self.mode
         }
 
+        /// Set the escape char mode
+        fn set_escape_char_mode(&mut self, mode: EscapeCharMode) {
+            self.escape_char_mode = mode;
+        }
+
+        /// Get the current escape char mode
+        fn get_escape_char_mode(&self) -> EscapeCharMode {
+            self.escape_char_mode
+        }
+
         /// Called when the screen needs to scroll up one row.
         fn scroll_screen(&mut self) -> Result<(), Self::Error> {
             for row in 0..HEIGHT - 1 {
@@ -519,11 +539,16 @@ mod test {
             Ok(())
         }
 
-        /// Write a single Unicode char to the screen at the given position
-        /// without updating the current position.
+    }
+
+    impl UnicodeConsole for TestConsole {
         fn write_char_at(&mut self, ch: char, pos: Position) -> Result<(), Self::Error> {
             self.lines[pos.row.0 as usize].chars[pos.col.0 as usize] = ch;
             Ok(())
+        }
+
+        fn handle_escape(&mut self, _escaped_char: char) -> bool {
+            false
         }
     }
 
