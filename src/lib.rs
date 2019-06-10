@@ -1,6 +1,8 @@
 //! # Console Traits
 //!
-//! Contains a trait which describes a console. A console is a rectangular monospaced text display, of a certain width and height. You can write Unicode text to it.
+//! Contains a trait which describes a console. A console is a rectangular
+//! monospaced text display, of a certain width and height. You can write
+//! Unicode text to it.
 //!
 //! Currently we assume UNIX LF sematics - that is a sole LF implies a new
 //! line *and* carriage return (as distinct to Windows semantics where you
@@ -35,10 +37,187 @@ pub struct Position {
     pub col: Col,
 }
 
+/// The states we can be in when parsing ANSI escape sequences
 #[derive(Debug, Copy, Clone)]
 pub enum EscapeCharMode {
+    /// Waiting for 0x1B
     Waiting,
-    Seen,
+    /// Last byte was 0x1B, waiting for the opening byte (0x40 to 0x5F)
+    SeenEscWantOpeningChar,
+    /// Opening byte was '[' (Control Sequence Introducer). Next arg is a
+    /// paramter, or a final-byte.
+    SeenCsiWantArgs,
+    /// Processing a CSI. We've seen at one integer paramter. Want more
+    /// arguments or a final-byte.
+    SeenCsiAndArgWantType(u32),
+    /// Processing a CSI. We've seen at two integer paramters. Want more
+    /// arguments or a final-byte.
+    SeenCsiAndTwoArgsWantType(u32, u32),
+    /// Processing a CSI. We've seen something we don't like, so we're looking
+    /// for a final-byte.
+    SeenCsiBadCode,
+}
+
+/// The standard 3-bit ANSI colours.
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum Colour {
+    Black = 0,
+    Red = 1,
+    Green = 2,
+    Yellow = 3,
+    Blue = 4,
+    Magenta = 5,
+    Cyan = 6,
+    White = 7,
+}
+
+/// The various colour sequences we can decode. A terminal can support zero or
+/// more of these.
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum CharacterAppearance {
+    /// SGR 0
+    Reset,
+    /// SGR 1
+    Bold,
+    /// SGR 2
+    Faint,
+    /// SGR 3
+    Italic,
+    /// SGR 4
+    Underline,
+    /// SGR 5
+    SlowBlink,
+    /// SGR 6
+    FastBlink,
+    /// SGR 7
+    Reverse,
+    /// SGR 8
+    Conceal,
+    /// SGR 9
+    CrossedOut,
+    /// SGR 10..19 (argument is 0 for default font, otherwise 1..9 for selected font index)
+    Font(u8),
+    /// SGR 20
+    Fraktur,
+    /// SGR 21
+    DoubleUnderline,
+    /// SGR 22
+    BoldFaintOff,
+    /// SGR 23
+    ItalicFrakturOff,
+    /// SGR 24
+    UnderlineOff,
+    /// SGR 25
+    BlinkOff,
+    /// SGR 27
+    InverseOff,
+    /// SGR 28
+    ConcealOff,
+    /// SGR 29
+    CrossedOutOff,
+    /// SGR 30..37 (argument is from colour table)
+    ForegroundColour(Colour),
+    /// SGR 39
+    DefaultForegroundColour,
+    /// SGR 40..47 (argument is from colour table)
+    BackgroundColour(Colour),
+    /// SGR 49
+    DefaultBackgroundColour,
+    /// Any other value
+    Unknown,
+}
+
+impl Into<CharacterAppearance> for u32 {
+    fn into(self) -> CharacterAppearance {
+        match self {
+            0 => CharacterAppearance::Reset,
+            1 => CharacterAppearance::Bold,
+            2 => CharacterAppearance::Faint,
+            3 => CharacterAppearance::Italic,
+            4 => CharacterAppearance::Underline,
+            5 => CharacterAppearance::SlowBlink,
+            6 => CharacterAppearance::FastBlink,
+            7 => CharacterAppearance::Reverse,
+            8 => CharacterAppearance::Conceal,
+            9 => CharacterAppearance::CrossedOut,
+            10...19 => CharacterAppearance::Font(self as u8 - 10),
+            20 => CharacterAppearance::Fraktur,
+            21 => CharacterAppearance::DoubleUnderline,
+            22 => CharacterAppearance::BoldFaintOff,
+            23 => CharacterAppearance::ItalicFrakturOff,
+            24 => CharacterAppearance::UnderlineOff,
+            25 => CharacterAppearance::BlinkOff,
+            27 => CharacterAppearance::InverseOff,
+            28 => CharacterAppearance::ConcealOff,
+            29 => CharacterAppearance::CrossedOutOff,
+            30 => CharacterAppearance::ForegroundColour(Colour::Black),
+            31 => CharacterAppearance::ForegroundColour(Colour::Red),
+            32 => CharacterAppearance::ForegroundColour(Colour::Green),
+            33 => CharacterAppearance::ForegroundColour(Colour::Yellow),
+            34 => CharacterAppearance::ForegroundColour(Colour::Blue),
+            35 => CharacterAppearance::ForegroundColour(Colour::Magenta),
+            36 => CharacterAppearance::ForegroundColour(Colour::Cyan),
+            37 => CharacterAppearance::ForegroundColour(Colour::White),
+            39 => CharacterAppearance::DefaultForegroundColour,
+            40 => CharacterAppearance::BackgroundColour(Colour::Black),
+            41 => CharacterAppearance::BackgroundColour(Colour::Red),
+            42 => CharacterAppearance::BackgroundColour(Colour::Green),
+            43 => CharacterAppearance::BackgroundColour(Colour::Yellow),
+            44 => CharacterAppearance::BackgroundColour(Colour::Blue),
+            45 => CharacterAppearance::BackgroundColour(Colour::Magenta),
+            46 => CharacterAppearance::BackgroundColour(Colour::Cyan),
+            47 => CharacterAppearance::BackgroundColour(Colour::White),
+            49 => CharacterAppearance::DefaultBackgroundColour,
+            _ => CharacterAppearance::Unknown,
+        }
+    }
+}
+
+/// The various ANSI escape sequences we support. Arguments are generally
+/// 1-based,
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum EscapeCode {
+    /// Resets the terminal to its initial state
+    Reset,
+    /// Moves the cursor one cell upwards. If the cursor is at the top of the
+    /// screen, this has no effect.
+    CursorUp(u32),
+    /// Moves the cursor one cell downwards. If the cursor is at the bottom of the
+    /// screen, this has no effect.
+    CursorDown(u32),
+    /// Moves the cursor one cell forwards. If the cursor is at the edge of the
+    /// screen, this has no effect.
+    CursorForward(u32),
+    /// Moves the cursor one cell backwards. If the cursor is at the edge of the
+    /// screen, this has no effect.
+    CursorBack(u32),
+    /// Moves the cursor to the start of the line, `arg` lines down.
+    CursorNextLine(u32),
+    /// Moves the cursor to the start of the line, `arg` lines up.
+    CursorPreviousLine(u32),
+    /// Moves the cursor to column `arg`.
+    CursorHorizontalAbsolute(u32),
+    /// Moves the cursor to row `arg-0`, column `arg-1`.
+    CursorPosition(u32, u32),
+    /// Clears part of the screen. `arg` can be:
+    ///
+    /// * 0 - clear from cursor to end of screen
+    /// * 1 - clear from cursor to beginning of screen
+    /// * 2 - clear entire screen
+    /// * 3 - clear entire screen and delete scrollback
+    EraseInDisplay(u32),
+    /// Erases part of the line. `arg` can be:
+    ///
+    /// * 0 - clear from cursor to end of line
+    /// * 1 - clear from cursor to start of line
+    /// * 2 - clear entire line
+    EraseInLine(u32),
+    /// Scroll whole page up `arg` lines.
+    ScrollUp(u32),
+    /// Scroll whole page down `arg` lines.
+    ScrollDown(u32),
+    /// Change character appearance
+    SelectGraphicRendition(CharacterAppearance),
 }
 
 /// How to handle Control Characters
@@ -105,6 +284,9 @@ pub trait BaseConsole {
     /// Called when the screen needs to scroll up one row.
     fn scroll_screen(&mut self) -> Result<(), Self::Error>;
 
+    /// Handle the ANSI escape sequence which has been detected in the stream
+    fn handle_escape(&mut self, code: EscapeCode);
+
     /// Move the current cursor right one position. Wraps at the end of the
     /// line. Returns Ok(true) if the screen needs to scroll, or Ok(false)
     /// if it does not.
@@ -130,6 +312,205 @@ pub trait BaseConsole {
         }
         Ok(())
     }
+
+    /// ANSI sequences are made entirely of ASCII characters, so we can
+    /// implement this one for both AsciiConsole and UnicodeConsole.
+    fn ansi_state_machine(&mut self, character: u8) {
+        let state = match self.get_escape_char_mode() {
+            EscapeCharMode::Waiting => {
+                // Er ... this is a bug.
+                unreachable!();
+            }
+            EscapeCharMode::SeenEscWantOpeningChar => match character {
+                b'c' => {
+                    self.handle_escape(EscapeCode::Reset);
+                    EscapeCharMode::Waiting
+                }
+                b'[' => EscapeCharMode::SeenCsiWantArgs,
+                _ => EscapeCharMode::Waiting,
+            },
+            EscapeCharMode::SeenCsiWantArgs => {
+                match character {
+                    b'0'...b'9' => {
+                        let digit = character - b'0';
+                        EscapeCharMode::SeenCsiAndArgWantType(digit as u32)
+                    }
+                    b';' => {
+                        // Missing argument - default to 0
+                        EscapeCharMode::SeenCsiAndArgWantType(0)
+                    }
+                    b'A' => {
+                        self.handle_escape(EscapeCode::CursorUp(0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'B' => {
+                        self.handle_escape(EscapeCode::CursorDown(0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'C' => {
+                        self.handle_escape(EscapeCode::CursorForward(0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'D' => {
+                        self.handle_escape(EscapeCode::CursorBack(0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'E' => {
+                        self.handle_escape(EscapeCode::CursorNextLine(0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'F' => {
+                        self.handle_escape(EscapeCode::CursorPreviousLine(0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'G' => {
+                        self.handle_escape(EscapeCode::CursorHorizontalAbsolute(0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'H' => {
+                        self.handle_escape(EscapeCode::CursorPosition(0, 0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'J' => {
+                        self.handle_escape(EscapeCode::EraseInDisplay(0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'K' => {
+                        self.handle_escape(EscapeCode::EraseInLine(0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'S' => {
+                        self.handle_escape(EscapeCode::ScrollUp(0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'T' => {
+                        self.handle_escape(EscapeCode::ScrollDown(0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'f' => {
+                        self.handle_escape(EscapeCode::CursorPosition(0, 0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'm' => {
+                        self.handle_escape(EscapeCode::SelectGraphicRendition(
+                            CharacterAppearance::Reset,
+                        ));
+                        EscapeCharMode::Waiting
+                    }
+                    0x40...0x7E => {
+                        // This is a final byte of a type we can't handle
+                        EscapeCharMode::Waiting
+                    }
+                    _ => EscapeCharMode::SeenCsiBadCode,
+                }
+            }
+            EscapeCharMode::SeenCsiAndArgWantType(old_arg) => {
+                match character {
+                    b'0'...b'9' => {
+                        let digit = character - b'0';
+                        EscapeCharMode::SeenCsiAndArgWantType((old_arg * 10) + digit as u32)
+                    }
+                    b';' => EscapeCharMode::SeenCsiAndTwoArgsWantType(old_arg, 0),
+                    b'A' => {
+                        self.handle_escape(EscapeCode::CursorUp(old_arg));
+                        EscapeCharMode::Waiting
+                    }
+                    b'B' => {
+                        self.handle_escape(EscapeCode::CursorDown(old_arg));
+                        EscapeCharMode::Waiting
+                    }
+                    b'C' => {
+                        self.handle_escape(EscapeCode::CursorForward(old_arg));
+                        EscapeCharMode::Waiting
+                    }
+                    b'D' => {
+                        self.handle_escape(EscapeCode::CursorBack(old_arg));
+                        EscapeCharMode::Waiting
+                    }
+                    b'E' => {
+                        self.handle_escape(EscapeCode::CursorNextLine(old_arg));
+                        EscapeCharMode::Waiting
+                    }
+                    b'F' => {
+                        self.handle_escape(EscapeCode::CursorPreviousLine(old_arg));
+                        EscapeCharMode::Waiting
+                    }
+                    b'G' => {
+                        self.handle_escape(EscapeCode::CursorHorizontalAbsolute(old_arg));
+                        EscapeCharMode::Waiting
+                    }
+                    b'H' => {
+                        self.handle_escape(EscapeCode::CursorPosition(old_arg, 0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'J' => {
+                        self.handle_escape(EscapeCode::EraseInDisplay(old_arg));
+                        EscapeCharMode::Waiting
+                    }
+                    b'K' => {
+                        self.handle_escape(EscapeCode::EraseInLine(old_arg));
+                        EscapeCharMode::Waiting
+                    }
+                    b'S' => {
+                        self.handle_escape(EscapeCode::ScrollUp(old_arg));
+                        EscapeCharMode::Waiting
+                    }
+                    b'T' => {
+                        self.handle_escape(EscapeCode::ScrollDown(old_arg));
+                        EscapeCharMode::Waiting
+                    }
+                    b'f' => {
+                        self.handle_escape(EscapeCode::CursorPosition(old_arg, 0));
+                        EscapeCharMode::Waiting
+                    }
+                    b'm' => {
+                        self.handle_escape(EscapeCode::SelectGraphicRendition(old_arg.into()));
+                        EscapeCharMode::Waiting
+                    }
+                    0x40...0x7E => {
+                        // This is a final byte of a type we can't handle
+                        EscapeCharMode::Waiting
+                    }
+                    _ => {
+                        // Need a final byte
+                        EscapeCharMode::SeenCsiBadCode
+                    }
+                }
+            }
+            EscapeCharMode::SeenCsiAndTwoArgsWantType(arg0, arg1) => {
+                match character {
+                    b'0'...b'9' => {
+                        let digit = character - b'0';
+                        EscapeCharMode::SeenCsiAndTwoArgsWantType(arg0, (arg1 * 10) + digit as u32)
+                    }
+                    b'H' => {
+                        self.handle_escape(EscapeCode::CursorPosition(arg0, arg1));
+                        EscapeCharMode::Waiting
+                    }
+                    b'f' => {
+                        self.handle_escape(EscapeCode::CursorPosition(arg0, arg1));
+                        EscapeCharMode::Waiting
+                    }
+                    0x40...0x7E => {
+                        // This is a final byte of a type we can't handle
+                        EscapeCharMode::Waiting
+                    }
+                    _ => EscapeCharMode::SeenCsiBadCode,
+                }
+            }
+            EscapeCharMode::SeenCsiBadCode => {
+                match character {
+                    0x40...0x7E => {
+                        // This is a final byte of a type we can't handle
+                        EscapeCharMode::Waiting
+                    }
+                    _ => EscapeCharMode::SeenCsiBadCode,
+                }
+            }
+        };
+        // Get the implementor to remember our state for next time
+        self.set_escape_char_mode(state);
+    }
 }
 
 /// Refinement of `BaseConsole` which supports 8-bit characters. Use this is
@@ -139,11 +520,6 @@ pub trait AsciiConsole: BaseConsole {
     /// Write a single 8-bit char to the screen at the given position
     /// without updating the current position.
     fn write_char_at(&mut self, ch: u8, pos: Position) -> Result<(), Self::Error>;
-
-    /// Called when they've used an escape character in the string. Currently
-    /// you can only escape a single byte. The escape character is `0x1B`.
-    /// This function returns 'true' when the escape sequence is complete.
-    fn handle_escape(&mut self, escaped_char: u8) -> bool;
 
     /// Write an 8-bit string to the screen at the given position. Updates the
     /// current position to the end of the string. Strings will wrap across
@@ -158,11 +534,6 @@ pub trait AsciiConsole: BaseConsole {
     /// Write a single 8-bit char to the screen at the current position.
     fn write_character(&mut self, ch: u8) -> Result<(), Self::Error> {
         match self.get_escape_char_mode() {
-            EscapeCharMode::Seen => {
-                if self.handle_escape(ch) {
-                    self.set_escape_char_mode(EscapeCharMode::Waiting);
-                }
-            }
             EscapeCharMode::Waiting => {
                 let mut pos = self.get_pos();
                 match self.is_special(ch) {
@@ -200,13 +571,16 @@ pub trait AsciiConsole: BaseConsole {
                     Some(SpecialChar::Delete) => {}
                     // Escape the next char
                     Some(SpecialChar::Escape) => {
-                        self.set_escape_char_mode(EscapeCharMode::Seen);
+                        self.set_escape_char_mode(EscapeCharMode::SeenEscWantOpeningChar);
                     }
                     None => {
                         self.write_char_at(ch, pos)?;
                         self.move_cursor_right()?;
                     }
                 }
+            }
+            _ => {
+                self.ansi_state_machine(ch);
             }
         }
         Ok(())
@@ -245,11 +619,6 @@ pub trait UnicodeConsole: BaseConsole {
     /// without updating the current position.
     fn write_char_at(&mut self, ch: char, pos: Position) -> Result<(), Self::Error>;
 
-    /// Called when they've used an escape character in the string. Currently
-    /// you can only escape a single byte. The escape character is `0x1B`.
-    /// This function returns 'true' when the escape sequence is complete.
-    fn handle_escape(&mut self, escaped_char: char) -> bool;
-
     /// Write a string to the screen at the given position. Updates the
     /// current position to the end of the string. Strings will wrap across
     /// the end of the screen and scroll the screen if they reach the bottom.
@@ -263,11 +632,6 @@ pub trait UnicodeConsole: BaseConsole {
     /// Write a single Unicode char to the screen at the current position.
     fn write_character(&mut self, ch: char) -> Result<(), Self::Error> {
         match self.get_escape_char_mode() {
-            EscapeCharMode::Seen => {
-                if self.handle_escape(ch) {
-                    self.set_escape_char_mode(EscapeCharMode::Waiting);
-                }
-            }
             EscapeCharMode::Waiting => {
                 let mut pos = self.get_pos();
                 match self.is_special(ch) {
@@ -305,12 +669,19 @@ pub trait UnicodeConsole: BaseConsole {
                     Some(SpecialChar::Delete) => {}
                     // Escape the next char
                     Some(SpecialChar::Escape) => {
-                        self.set_escape_char_mode(EscapeCharMode::Seen);
+                        self.set_escape_char_mode(EscapeCharMode::SeenEscWantOpeningChar);
                     }
                     None => {
                         self.write_char_at(ch, pos)?;
                         self.move_cursor_right()?;
                     }
+                }
+            }
+            _ => {
+                // Feed the UTF-8 encoded bytes into the ANSI engine
+                let mut buf = [0u8; 6];
+                for b in ch.encode_utf8(&mut buf).bytes() {
+                    self.ansi_state_machine(b);
                 }
             }
         }
@@ -456,6 +827,7 @@ mod test {
         lines: [Line; HEIGHT as usize],
         mode: ControlCharMode,
         escape_char_mode: EscapeCharMode,
+        ansi_codes: Vec<EscapeCode>,
     }
 
     impl TestConsole {
@@ -468,6 +840,7 @@ mod test {
                 pos: Position::origin(),
                 mode: ControlCharMode::Interpret,
                 escape_char_mode: EscapeCharMode::Waiting,
+                ansi_codes: Vec::new(),
             }
         }
     }
@@ -539,16 +912,15 @@ mod test {
             Ok(())
         }
 
+        fn handle_escape(&mut self, code: EscapeCode) {
+            self.ansi_codes.push(code);
+        }
     }
 
     impl UnicodeConsole for TestConsole {
         fn write_char_at(&mut self, ch: char, pos: Position) -> Result<(), Self::Error> {
             self.lines[pos.row.0 as usize].chars[pos.col.0 as usize] = ch;
             Ok(())
-        }
-
-        fn handle_escape(&mut self, _escaped_char: char) -> bool {
-            false
         }
     }
 
@@ -636,6 +1008,25 @@ mod test {
         assert_eq!(c.pos.col, Col(0));
     }
 
+    #[test]
+    fn test_sgr_reset() {
+        let mut c = TestConsole::new();
+        writeln!(c, "\u{001B}[0m").unwrap();
+        assert_eq!(
+            &c.ansi_codes,
+            &[EscapeCode::SelectGraphicRendition(
+                CharacterAppearance::Reset
+            )],
+        );
+        writeln!(c, "\u{001B}[m").unwrap();
+        assert_eq!(
+            &c.ansi_codes,
+            &[
+                EscapeCode::SelectGraphicRendition(CharacterAppearance::Reset),
+                EscapeCode::SelectGraphicRendition(CharacterAppearance::Reset)
+            ],
+        );
+    }
 }
 
 // End of file
